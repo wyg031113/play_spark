@@ -6,18 +6,21 @@ import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.feature.{OneHotEncoder, OneHotEncoderEstimator, OneHotEncoderModel, StringIndexer, VectorAssembler}
 import org.apache.spark.sql.catalyst.dsl.expressions.StringToAttributeConversionHelper
+import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.{DataFrame, SQLContext, SparkSession}
 import org.apache.spark.{SparkConf, SparkContext, sql}
+import org.apache.spark.sql.functions._
 
 import scala.collection.mutable.ListBuffer
 //参考https://blog.csdn.net/u011622631/article/details/81562699
 object OneHot {
     def main(args: Array[String]): Unit = {
         //Logger.getLogger("org").setLevel(Level.ERROR)
-        oneHotTest()
+        //oneHotTest()
+        HotTest()
     }
-    def oneHotMovie(): Unit ={
+    def HotTest(): Unit ={
         val conf = new SparkConf()
             .setAppName("OneHot")
             .setMaster("local")
@@ -28,7 +31,8 @@ object OneHot {
             .load(moviePath.getPath)
         samples.printSchema()
         samples.show()
-        oneHotEncoder(samples)
+        //oneHotEncoder(samples)
+        multiHot(samples)
         spark.close()
     }
     def oneHotEncoder(samples :DataFrame): Unit = {
@@ -103,6 +107,39 @@ object OneHot {
         evaluator.setMetricName("areaUnderROC")
         val auc = evaluator.evaluate(preds)
         println(s"areaUnderRoc=${auc}")
+    }
+    def multiHot(sample :DataFrame): Unit ={
+        //genres分割
+        val samplesWithGenre = sample.select(col("movieId"), col("title"),
+            explode(split(col("genres"), "\\|").cast("array<string>")).as("genre"))
+        //编码，每个genre用一个数字表示
+        val strIndexer = new StringIndexer()
+            .setInputCol("genre")
+            .setOutputCol("genreIndex")
+        val strIndexModel = strIndexer.fit(samplesWithGenre)
+        val genreIndexSamples = strIndexModel.transform(samplesWithGenre)
+            .withColumn("genreIndexInt", col("genreIndex").cast(sql.types.IntegerType))
+        genreIndexSamples.show()
+        //有多少种genre
+        val indexSize = genreIndexSamples
+            .agg(max(col("genreIndexInt")))
+            .head()
+            .getAs[Int](0) + 1
+        println(s"max index is ${indexSize}")
+
+        //反向explode
+        val processSamples =genreIndexSamples
+            .groupBy(col("movieId"))
+            .agg(collect_list("genreIndexInt").as("genreIndexes"))
+            .withColumn("indexSize", typedLit(indexSize)) //加上常数列
+        processSamples.show()
+        //UDF, udf参数必须是column,所以typedLit
+        val array2vec: UserDefinedFunction = udf {
+            (a: Seq[Int], length: Int) =>
+                org.apache.spark.ml.linalg.Vectors.sparse(length, a.sortWith(_ < _).toArray, Array.fill[Double](a.length)(1.0)) }
+        val finalSample = processSamples
+            .withColumn("vector", array2vec(col("genreIndexes"), col("indexSize")))
+        finalSample.show()
     }
 }
 
