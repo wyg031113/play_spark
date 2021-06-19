@@ -11,7 +11,7 @@ import org.apache.spark.sql.{DataFrame, SQLContext, SparkSession}
 import org.apache.spark.{SparkConf, SparkContext, sql}
 
 import scala.collection.mutable.ListBuffer
-
+//参考https://blog.csdn.net/u011622631/article/details/81562699
 object OneHot {
     def main(args: Array[String]): Unit = {
         //Logger.getLogger("org").setLevel(Level.ERROR)
@@ -105,3 +105,4 @@ object OneHot {
         println(s"areaUnderRoc=${auc}")
     }
 }
+
