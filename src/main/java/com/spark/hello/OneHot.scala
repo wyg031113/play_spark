@@ -4,13 +4,14 @@ import org.apache.log4j.{Level, Logger}
 import org.apache.spark.ml.classification.LogisticRegression
 import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator
 import org.apache.spark.ml.{Pipeline, PipelineStage}
-import org.apache.spark.ml.feature.{OneHotEncoder, OneHotEncoderEstimator, OneHotEncoderModel, StringIndexer, VectorAssembler}
+import org.apache.spark.ml.feature.{MinMaxScaler, OneHotEncoder, OneHotEncoderEstimator, OneHotEncoderModel, QuantileDiscretizer, StringIndexer, VectorAssembler}
 import org.apache.spark.sql.catalyst.dsl.expressions.StringToAttributeConversionHelper
 import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.{DataFrame, SQLContext, SparkSession}
 import org.apache.spark.{SparkConf, SparkContext, sql}
 import org.apache.spark.sql.functions._
+import org.spark_project.dmg.pmml.Quantile
 
 import scala.collection.mutable.ListBuffer
 //参考https://blog.csdn.net/u011622631/article/details/81562699
@@ -18,7 +19,8 @@ object OneHot {
     def main(args: Array[String]): Unit = {
         //Logger.getLogger("org").setLevel(Level.ERROR)
         //oneHotTest()
-        HotTest()
+        //HotTest()
+        numFeature()
     }
     def HotTest(): Unit ={
         val conf = new SparkConf()
@@ -140,6 +142,60 @@ object OneHot {
         val finalSample = processSamples
             .withColumn("vector", array2vec(col("genreIndexes"), col("indexSize")))
         finalSample.show()
+    }
+    def numFeature(): Unit ={
+        val conf = new SparkConf()
+            .setAppName(this.getClass.getSimpleName)
+            .setMaster("local")
+        val spark = SparkSession.builder()
+            .config(conf)
+            .getOrCreate()
+        val moviesFile = this.getClass.getResource("/data/ratings.csv")
+        val movies = spark.read.format("csv")
+            .option("header", "true")
+            .load(moviesFile.getPath)
+        movies.printSchema()
+        movies.show()
+
+        val moviesNumCol = movies.withColumn("userIdInt", col("userId").cast(org.apache.spark.sql.types.IntegerType))
+            .withColumn("movieIdInt", col("movieId").cast(org.apache.spark.sql.types.IntegerType))
+            .withColumn("ratingDouble", col("rating").cast(org.apache.spark.sql.types.DoubleType))
+        moviesNumCol.printSchema()
+        moviesNumCol.show()
+
+        val encoder = new OneHotEncoderEstimator()
+            .setInputCols(Array("userIdInt", "movieIdInt"))
+            .setOutputCols(Array("userIdVec", "movieIdVec"))
+            .setDropLast(false)
+        val afterOnehot = encoder.fit(moviesNumCol).transform(moviesNumCol)
+        afterOnehot.show()
+        //上边对两列进行oneHot,纯属娱乐
+
+        val double2vec: UserDefinedFunction = udf { (value: Double) => org.apache.spark.ml.linalg.Vectors.dense(value) }
+
+        val moviesFeature = movies
+            .groupBy(col("movieId"))
+            .agg(count(lit(1)).as("ratingCount"),
+                avg(col("rating")).as("avgRating"),
+                variance(col("rating")).as("varRating"))
+            .withColumn("avgRatingVec", double2vec(col("avgRating")))
+        moviesFeature.printSchema()
+        moviesFeature.show(10)
+        //分桶
+        val ratingCountDis = new QuantileDiscretizer()
+            .setInputCol("ratingCount")
+            .setOutputCol("ratingCountBucket")
+            .setNumBuckets(100)
+        //normalization
+        val ratingScalar = new MinMaxScaler()
+            .setInputCol("avgRatingVec")
+            .setOutputCol("scaleAvgRating")
+
+        val pipelineStage = Array[PipelineStage](ratingCountDis, ratingScalar)
+        val featurePipeline = new Pipeline().setStages(pipelineStage)
+        val movieProcessFeature = featurePipeline.fit(moviesFeature).transform(moviesFeature)
+        movieProcessFeature.show()
+
     }
 }
 
